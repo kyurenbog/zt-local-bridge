@@ -1,0 +1,13 @@
+.tools/
+.gradle/
+**/build/
+**/.cxx/
+local.properties
+vendor/*
+!vendor/libzt
+artifacts/
+VALIDATION.md
+*.keystore
+*.jks
+.idea/
+*.iml

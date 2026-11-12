@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.22.1)
+project(ztbridge)
+add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../../../../vendor/libzt" libzt)
+add_library(bridgeio SHARED bridgeio.cpp)
+target_include_directories(bridgeio PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../../../../vendor/libzt/include")
+target_link_libraries(bridgeio zt-shared)
