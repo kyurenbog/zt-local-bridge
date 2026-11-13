@@ -9,7 +9,7 @@ final class JournalText {
     }
     static String export(JSONObject state) {
         SimpleDateFormat date = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.ROOT);
-        StringBuilder out = new StringBuilder("ZT Local Bridge 0.4.1\nNode ID: ").append(state.optString("nodeId"))
+        StringBuilder out = new StringBuilder("ZT Local Bridge 0.5\nNode ID: ").append(state.optString("nodeId"))
             .append("\nСостояние: ").append(state.optString("detail")).append('\n');
         JSONObject config = state.optJSONObject("config"); if (config != null) out.append("Настройки: ").append(config).append('\n');
         JSONArray entries = state.optJSONArray("events");

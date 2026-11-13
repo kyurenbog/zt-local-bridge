@@ -1,6 +1,21 @@
 #include <jni.h>
 #include <vector>
 #include "ZeroTierSockets.h"
+#include <arpa/inet.h>
+extern "C" int ztb_sync_routes(uint64_t network, uint32_t destination, char* output, size_t capacity);
+extern "C" JNIEXPORT jstring JNICALL
+Java_org_ztbridge_android_NativeIO_syncRoutes(JNIEnv* env, jclass, jlong network, jstring destination) {
+    const char* text = env->GetStringUTFChars(destination, nullptr);
+    if (!text) return nullptr;
+    in_addr address;
+    int valid = inet_pton(AF_INET, text, &address);
+    env->ReleaseStringUTFChars(destination, text);
+    if (valid != 1) return env->NewStringUTF("Неверный IPv4-адрес назначения");
+    char status[512] = {};
+    if (ztb_sync_routes(static_cast<uint64_t>(network), address.s_addr, status, sizeof(status)) != 0)
+        return env->NewStringUTF("Таблица маршрутов ZeroTier ещё не получена");
+    return env->NewStringUTF(status);
+}
 
 static int ioResult(int result) {
     if (result >= 0) return result;

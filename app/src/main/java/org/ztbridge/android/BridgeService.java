@@ -32,6 +32,8 @@ public class BridgeService extends Service {
     private boolean failed;
     private long revision, started;
     private String notificationText = "";
+    private String routeStatus = "";
+    private String profileName = "Основной";
     private final Handler main = new Handler(Looper.getMainLooper());
 
     private synchronized void log(String level, String message) {
@@ -53,6 +55,7 @@ public class BridgeService extends Service {
                 .put("downloaded", downloaded.get()).put("started", started).put("revision", revision)
                 .put("nodeOnline", nodeOnline).put("networkReady", transportReady)
                 .put("lastReceived", lastReceived.get())
+                .put("route", routeStatus).put("profileName", profileName)
                 .put("events", new JSONArray(events));
             BridgeState.write(this, snapshot);
         } catch (Exception ignored) {}
@@ -91,6 +94,8 @@ public class BridgeService extends Service {
         if (!running) {
             try {
                 config = BridgeConfig.parse(intent == null ? "" : intent.getStringExtra("config"));
+                profileName = intent.getStringExtra("profileName");
+                if (profileName == null) profileName = "Основной";
                 slots = new Semaphore(config.connectionLimit);
                 running = true; started = System.currentTimeMillis();
                 state("starting", "Подключаемся к ZeroTier…");
@@ -107,8 +112,16 @@ public class BridgeService extends Service {
         int reaped = 0;
         for (Link link : links) if (link.lifetime.reap(SystemClock.elapsedRealtime())) reaped++;
         if (reaped > 0) log("debug", "Закрываем неактивные TCP-соединения: " + reaped);
+        if (listenerReady) refreshRoutes();
         refreshHealth();
         publish();
+    }
+    private void refreshRoutes() {
+        String current = NativeIO.syncRoutes(config.network(), config.remoteIp);
+        if (current != null && !current.equals(routeStatus)) {
+            routeStatus = current;
+            log(current.startsWith("Нет ") ? "warn" : "info", current);
+        }
     }
     private void refreshHealth() {
         if (!running || !listenerReady || failed) return;
@@ -171,6 +184,7 @@ public class BridgeService extends Service {
             while (running && !node.isNetworkTransportReady(config.network())) Thread.sleep(300);
             if (!running) return;
             synchronized (this) { ztIp = node.getIPv4Address(config.network()).getHostAddress(); }
+            refreshRoutes();
             ServerSocket server = new ServerSocket(); listener = server;
             server.bind(new InetSocketAddress(InetAddress.getByName("127.0.0.1"), config.localPort));
             if (!running) { server.close(); return; }

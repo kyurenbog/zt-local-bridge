@@ -29,6 +29,10 @@ public class MainActivity extends Activity {
     private boolean active;
     private long startingUntil;
     private int filter;
+    private Profiles profiles;
+    private Spinner profilePicker;
+    private Button addProfile, renameProfile, deleteProfile;
+    private boolean rebuildingProfiles;
     private final Runnable refresh = new Runnable() {
         public void run() { renderState(); handler.postDelayed(this, 1000); }
     };
@@ -130,20 +134,32 @@ public class MainActivity extends Activity {
         equal(parent, box); return value;
     }
     private void buildSettings() {
-        BridgeConfig config;
-        try { config = BridgeConfig.parse(getPreferences(0).getString("config", "")); }
-        catch (Exception e) { config = BridgeConfig.defaults(); }
+        try { profiles = Profiles.load(getPreferences(0).getString("profiles", ""), getPreferences(0).getString("config", "")); }
+        catch (Exception e) {
+            getPreferences(0).edit().putString("profiles_recovery", getPreferences(0).getString("profiles", "")).apply();
+            profiles = Profiles.load("", ""); Toast.makeText(this, "Не удалось прочитать профили. Резервная копия сохранена.", Toast.LENGTH_LONG).show();
+        }
+        JSONObject config = profiles.current().config;
         LinearLayout box = card(settingsPanel);
         box.addView(text("Настройки моста", 19, TEXT, true)); space(box, 5);
+        profilePicker = new Spinner(this); box.addView(profilePicker, new LinearLayout.LayoutParams(-1, dp(52)));
+        LinearLayout profileActions = row();
+        addProfile = button("Новый", false); renameProfile = button("Имя", false); deleteProfile = button("Удалить", false);
+        for (Button b : new Button[]{addProfile, renameProfile, deleteProfile}) equal(profileActions, b);
+        box.addView(profileActions); space(box, 16);
+        addProfile.setOnClickListener(v -> editProfileName(true)); renameProfile.setOnClickListener(v -> editProfileName(false));
+        deleteProfile.setOnClickListener(v -> new AlertDialog.Builder(this).setTitle("Удалить профиль «" + profiles.current().name + "»?")
+            .setMessage("Ключ устройства ZeroTier сохранится.").setNegativeButton("Отмена", null)
+            .setPositiveButton("Удалить", (d, which) -> { profiles.removeCurrent(); persistProfiles(); refreshProfiles(); fillProfile(); }).show());
         formHint = text("Сохраняются на этом устройстве", 12, MUTED, false); box.addView(formHint); space(box, 22);
-        network = field(box, "СЕТЬ · NETWORK ID", config.networkId, android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS, 101);
+        network = field(box, "СЕТЬ · NETWORK ID", config.optString("networkId"), android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS, 101);
         network.setFilters(new InputFilter[]{new InputFilter.LengthFilter(16)});
-        remoteIp = field(box, "IP VPS В СЕТИ ZEROTIER", config.remoteIp, android.text.InputType.TYPE_CLASS_PHONE, 102);
+        remoteIp = field(box, "IP СЕРВЕРА · ZEROTIER ИЛИ LAN", config.optString("remoteIp"), android.text.InputType.TYPE_CLASS_PHONE, 102);
         LinearLayout ports = row(); LinearLayout left = column(), right = column();
         equal(ports, left); equal(ports, right);
-        localPort = field(left, "ЛОКАЛЬНЫЙ ПОРТ", "" + config.localPort, android.text.InputType.TYPE_CLASS_NUMBER, 103);
-        remotePort = field(right, "ПОРТ VPS", "" + config.remotePort, android.text.InputType.TYPE_CLASS_NUMBER, 104); box.addView(ports);
-        connectionLimit = field(box, "ЛИМИТ TCP-СОЕДИНЕНИЙ · 16–512", "" + config.connectionLimit, android.text.InputType.TYPE_CLASS_NUMBER, 105);
+        localPort = field(left, "ЛОКАЛЬНЫЙ ПОРТ", config.optString("localPort", "15000"), android.text.InputType.TYPE_CLASS_NUMBER, 103);
+        remotePort = field(right, "ПОРТ СЕРВЕРА", config.optString("remotePort", "443"), android.text.InputType.TYPE_CLASS_NUMBER, 104); box.addView(ports);
+        connectionLimit = field(box, "ЛИМИТ TCP-СОЕДИНЕНИЙ · 16–512", config.optString("connectionLimit", "256"), android.text.InputType.TYPE_CLASS_NUMBER, 105);
         box.addView(text("По умолчанию 256. Больший лимит увеличивает расход памяти. Зависшие соединения очищаются автоматически.", 12, MUTED, false)); space(box, 18);
         route = text("", 13, ACCENT, true); box.addView(route); space(box, 18);
         save = button("Сохранить настройки", false); box.addView(save, new LinearLayout.LayoutParams(-1, dp(46))); save.setOnClickListener(v -> saveConfig());
@@ -154,9 +170,51 @@ public class MainActivity extends Activity {
         };
         for (EditText field : new EditText[]{network, remoteIp, remotePort, localPort}) field.addTextChangedListener(watcher);
         updateRoute();
+        refreshProfiles(); persistProfiles();
         LinearLayout help = card(settingsPanel); help.addView(text("Как подключить v2rayNG", 16, TEXT, true)); space(help, 10);
         help.addView(text("1. Отключите обычный ZeroTier.\n2. Исключите ZT Local Bridge из VPN.\n3. В профиле укажите 127.0.0.1 и локальный порт.\n4. Сохраните параметры TLS / REALITY.", 13, MUTED, false));
         space(help, 10); help.addView(text("При смене сети разрешите этот Node ID в её панели управления.", 12, MUTED, false));
+    }
+    private void persistProfiles() { getPreferences(0).edit().putString("profiles", profiles.json()).apply(); }
+    private void saveDraft() {
+        try {
+            profiles.current().config = new JSONObject().put("networkId", network.getText().toString()).put("remoteIp", remoteIp.getText().toString())
+                .put("localPort", localPort.getText().toString()).put("remotePort", remotePort.getText().toString()).put("connectionLimit", connectionLimit.getText().toString());
+            persistProfiles();
+        } catch (JSONException e) { throw new IllegalStateException(e); }
+    }
+    private void fillProfile() {
+        JSONObject c = profiles.current().config;
+        network.setText(c.optString("networkId")); remoteIp.setText(c.optString("remoteIp"));
+        localPort.setText(c.optString("localPort", "15000")); remotePort.setText(c.optString("remotePort", "443"));
+        connectionLimit.setText(c.optString("connectionLimit", "256")); updateRoute();
+    }
+    private void refreshProfiles() {
+        rebuildingProfiles = true;
+        profilePicker.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, new ArrayList<>(profiles.items)));
+        profilePicker.setSelection(profiles.items.indexOf(profiles.current()), false);
+        profilePicker.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                Profiles.Profile picked = profiles.items.get(position);
+                if (rebuildingProfiles || picked.id.equals(profiles.selected)) return;
+                if (active || startingUntil > SystemClock.elapsedRealtime()) { refreshProfiles(); return; }
+                saveDraft(); profiles.selected = picked.id; persistProfiles(); fillProfile();
+            }
+            public void onNothingSelected(AdapterView<?> parent) {}
+        });
+        profilePicker.post(() -> rebuildingProfiles = false);
+    }
+    private void editProfileName(boolean create) {
+        EditText input = new EditText(this); input.setSingleLine(true); input.setText(create ? "" : profiles.current().name);
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle(create ? "Новый профиль" : "Имя профиля").setView(input)
+            .setNegativeButton("Отмена", null).setPositiveButton("Сохранить", null).create();
+        dialog.setOnShowListener(d -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            try {
+                saveDraft();
+                if (create) profiles.add(input.getText().toString()); else profiles.rename(input.getText().toString());
+                persistProfiles(); refreshProfiles(); fillProfile(); dialog.dismiss();
+            } catch (IllegalArgumentException e) { input.setError(e.getMessage()); }
+        })); dialog.show();
     }
     private void selectTab(boolean logs) {
         settingsPanel.setVisibility(logs ? View.GONE : View.VISIBLE); logsPanel.setVisibility(logs ? View.VISIBLE : View.GONE);
@@ -169,6 +227,7 @@ public class MainActivity extends Activity {
         try {
             BridgeConfig config = readConfig();
             getPreferences(0).edit().putString("config", config.json().toString()).apply();
+            profiles.current().config = config.json(); persistProfiles();
             ((InputMethodManager)getSystemService(INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(network.getWindowToken(), 0);
             Toast.makeText(this, "Настройки сохранены", Toast.LENGTH_SHORT).show(); return config;
         } catch (IllegalArgumentException e) { new AlertDialog.Builder(this).setTitle("Проверьте настройки").setMessage(e.getMessage()).setPositiveButton("Понятно", null).show(); return null; }
@@ -178,7 +237,7 @@ public class MainActivity extends Activity {
         else {
             BridgeConfig config = saveConfig(); if (config == null) return;
             startingUntil = SystemClock.elapsedRealtime() + 5000;
-            try { startForegroundService(new Intent(this, BridgeService.class).putExtra("config", config.json().toString())); }
+            try { startForegroundService(new Intent(this, BridgeService.class).putExtra("config", config.json().toString()).putExtra("profileName", profiles.current().name)); }
             catch (Exception e) { startingUntil = 0; Toast.makeText(this, "Не удалось запустить: " + e.getMessage(), Toast.LENGTH_LONG).show(); }
             renderState();
         }
@@ -206,7 +265,8 @@ public class MainActivity extends Activity {
         headline.setText(title); badge.setText(label); badge.setTextColor(tint);
         detail.setText(pending ? "Подготавливаем ZeroTier и локальный порт…" : stale ? "Данные интерфейса давно не обновлялись. Это само по себе не подтверждает обрыв передачи." : snapshot.optString("detail", "Запустите мост, затем включите профиль v2rayNG."));
         String id = snapshot.optString("nodeId"); nodeValue.setText(id.isEmpty() ? "Появится после запуска" : id); nodeCopy.setEnabled(!id.isEmpty()); nodeCopy.setAlpha(id.isEmpty() ? .4f : 1f);
-        String ip = snapshot.optString("ztIp"); ipValue.setText("ZeroTier IP  " + (ip.isEmpty() || !active ? "—" : ip));
+        String ip = snapshot.optString("ztIp"); ipValue.setText("Профиль: " + (active ? snapshot.optString("profileName", profiles.current().name) : profiles.current().name)
+            + "\nZeroTier IP  " + (ip.isEmpty() || !active ? "—" : ip) + (active && !snapshot.optString("route").isEmpty() ? "\n" + snapshot.optString("route") : ""));
         upload.setText(bytes(snapshot.optLong("uploaded"))); download.setText(bytes(snapshot.optLong("downloaded")));
         JSONObject currentConfig = snapshot.optJSONObject("config");
         count.setTextSize(16); count.setText(active ? snapshot.optInt("connections") + " / " + (currentConfig == null ? 256 : currentConfig.optInt("connectionLimit", 256)) : "0");
@@ -214,6 +274,7 @@ public class MainActivity extends Activity {
         connect.setBackground(shape(active ? 0xff293a50 : ACCENT, 14, 0)); connect.setTextColor(active ? TEXT : BG);
         for (EditText field : new EditText[]{network, remoteIp, remotePort, localPort, connectionLimit}) { field.setEnabled(!busy); field.setAlpha(busy ? .55f : 1f); }
         save.setEnabled(!busy); save.setAlpha(busy ? .5f : 1f); formHint.setText(busy ? "Для изменения настроек остановите подключение" : "Сохраняются на этом устройстве");
+        profilePicker.setEnabled(!busy); addProfile.setEnabled(!busy); renameProfile.setEnabled(!busy); deleteProfile.setEnabled(!busy && profiles.items.size() > 1);
     }
     private String bytes(long n) {
         if (n < 1024) return n + " Б";
